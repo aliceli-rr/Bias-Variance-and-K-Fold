@@ -1,0 +1,380 @@
+---
+title: "Bias-Variance Trade off"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Fake Data
+```{r}
+rm(list=ls())
+set.seed(341)
+N <- 125
+# Get some x's
+x <- runif(N, 0, 1)
+x = rep(x, each=2)
+mu <- function(x) { sin( 3*pi*x )/x }
+# generate some ys
+y <- mu(x) + rnorm(N, 0, .6)
+# Here's the data
+fake.data = data.frame(x=x, y=y)
+options(warn=-1)
+```
+
+# Properties of the population
+
+## 1) Mean function
+$\mu(x) = sin(3\pi x)/x$ is the mean function.
+
+## 2) Ave_x(y)
+```{r}
+### For a given population, and choice of x and y
+### mu(x) returns the average of the ys 
+
+getmuFun <- function(pop, xvarname, yvarname){
+  ## First remove NAs
+  pop <- na.omit(pop[, c(xvarname, yvarname)])
+  x <- pop[, xvarname]
+  y <- pop[, yvarname]
+  xks <- unique(x)
+  muVals <- sapply(xks,
+                   FUN = function(xk) {
+                     mean(y[x==xk])
+                   })
+  ## Put the values in the order of xks
+  ord <- order(xks)
+  xks <- xks[ord]
+  xkRange <-xks[c(1,length(xks))]
+  minxk <- min(xkRange) 
+  maxxk <- max(xkRange)
+  ## mu values
+  muVals <- muVals[ord]
+  muRange <- muVals[c(1, length(muVals))]
+  muFun <- function(xVals){
+    ## vector of predictions
+    ## same size as xVals and NA in same locations
+    predictions <- xVals
+    ## Take care of NAs
+    xValsLocs <- !is.na(xVals)
+    ## Just predict non-NA xVals
+    predictions[xValsLocs] <- sapply(xVals[xValsLocs],
+                                     FUN = function(xVal) {
+                                       if (xVal < minxk) {
+                                         result <- muRange[1]
+                                       } else
+                                         if(xVal > maxxk) {
+                                           result <- muRange[2]
+                                         } else
+                                         {
+                                           xlower <- max(c(minxk, xks[xks < xVal]))
+                                           xhigher <- min(c(maxxk, xks[xks > xVal]))
+                                           mulower <- muVals[xks == xlower]
+                                           muhigher <- muVals[xks == xhigher]
+                                           interpolateFn <- approxfun(x=c(xlower, xhigher),
+                                                                      y=c(mulower, muhigher))
+                                           result <- interpolateFn(xVal)
+                                         }
+                                       result
+                                     }
+    )
+    ## Now return the predictions (including NAs)
+    predictions
+  }
+  muFun
+}
+muhat <- getmuFun(fake.data, "x", "y")
+
+```
+
+## 3) Plot - overlaying true mean function and Ave_x(y)
+```{r}
+plot(x,y, xlim = c(0,1), ylim = c(-3,11))
+par(new = TRUE)
+plot(x = sort(x), y = muhat(sort(x)), xlim = c(0,1), ylim = c(-3,11), yaxt = "n", 
+     xaxt = "n", col = "blue", xlab ="", ylab = "", type = "l")
+par(new = TRUE)
+plot(x = sort(x), y = mu(sort(x)), type = "l", xlim = c(0,1),
+     ylim = c(-3,11), yaxt = "n", xaxt = "n", col = "red", xlab ="", ylab = "")
+par(new = FALSE)
+```
+Blue is function defined in iv. Red is true mean function.
+
+## 4) Plot - overlaying polynomials with degree 2 and 10
+```{r}
+getmuhat <- function(sampleXY, complexity = 1) {
+  formula <- paste0("y ~ ",
+                    if (complexity==0) {
+                      "1"
+                    } else 
+                      paste0("poly(x, ", complexity, ", raw = TRUE)") 
+  )
+  
+  fit <- lm(as.formula(formula), data = sampleXY)
+  
+  ## From this we construct the predictor function
+  muhat <- function(x){
+    if ("x" %in% names(x)) {
+      ## x is a dataframe containing the variate named
+      ## by xvarname
+      newdata <- x
+    } else 
+      ## x is a vector of values that needs to be a data.frame
+    {newdata <- data.frame(x = x) }
+    ## The prediction
+    predict(fit, newdata = newdata)
+  }
+  ## muhat is the function that we need to calculate values 
+  ## at any x, so we return this function from getmuhat
+  muhat
+}
+muhat2 <- getmuhat(fake.data, complexity=2)
+muhat10 <- getmuhat(fake.data, complexity=10)
+
+plot(x,y, xlim = c(0,1), ylim = c(-3,11))
+par(new = TRUE)
+plot(x = sort(x), y = muhat2(sort(x)), xlim = c(0,1), ylim = c(-3,11), yaxt = "n", 
+     xaxt = "n", col = "blue", xlab ="", ylab = "", type = "l")
+par(new = TRUE)
+plot(x = sort(x), y = muhat10(sort(x)), type = "l", xlim = c(0,1),
+     ylim = c(-3,11), yaxt = "n", xaxt = "n", col = "red", xlab ="", ylab = "")
+par(new = FALSE)
+```
+Blue line is polynomial with degree = 2, red is degree = 10.
+As you can see, degree 2 is very biased and does not fit the data very well.
+
+
+# Generate m = 100 samples of size n = 40. Fit a polynomial with degree 2 and 10 to every sample.
+
+##1) Plot all fitted polynomails with degree 2 and 10.
+```{r}
+popSize <- function(pop) {nrow(as.data.frame(pop))}
+sampSize <- function(samp) {popSize(samp)}
+
+getSampleComp <- function(pop, size, replace=FALSE) {
+  N <- popSize(pop)
+  samp <- rep(FALSE, N)
+  samp[sample(1:N, size, replace = replace)] <- TRUE
+  samp
+}
+
+### This function will return a data frame containing
+### only two variates, an x and a y
+getXYSample <- function(xvarname, yvarname, samp, pop) {
+  sampData <- pop[samp, c(xvarname, yvarname)]
+  names(sampData) <- c("x", "y")
+  sampData
+}
+
+m <- 100
+n <- 40
+
+indices <- lapply(1:m, FUN= function(i){getSampleComp(fake.data, n)})
+fsamples <- lapply(indices, 
+    FUN= function(samp){getXYSample("x", "y", samp, fake.data)})
+
+
+poly2_lst <- Map(function(j){getmuhat(j,complexity = 2)},fsamples)
+poly10_lst <- Map(function(j){getmuhat(j,complexity = 10)},fsamples)
+
+#Plot
+par(mfrow=c(1,2))
+plot(fake.data, main = "Degree 2")
+invisible(Map(function(i){
+  curve(expr = i(x), add = TRUE, col = adjustcolor('grey',.3))}, poly2_lst))
+curve(expr = muhat2, add = TRUE, lwd = 2)
+
+plot(fake.data, main = "Degree 10")
+invisible(Map(function(i){
+  curve(expr = i(x), add = TRUE, col = adjustcolor('grey',.3))},  poly10_lst))
+curve(expr = muhat10, add = TRUE, lwd = 2)
+```
+
+##2) Sampling variability 
+```{r}
+ave_y_mu_sq <- function(sample, predfun, na.rm = TRUE){
+  mean((sample$y - predfun(sample$x))^2, na.rm = na.rm)
+}
+
+### We will also need to calculate the average difference
+### between two different predictor functions over some set
+### of x values: Ave ( predfun1(x) - predfun2(x))^2
+### 
+ave_mu_mu_sq <- function(predfun1, predfun2, x, na.rm = TRUE){
+  mean((predfun1(x) - predfun2(x))^2, na.rm = na.rm)
+}
+
+getmubar <- function(muhats) {
+  # the muhats must be a list of muhat functions
+  # We build and return mubar, the function that 
+  # is the average of the functions in muhats
+  # Here is mubar:
+  function(x) {
+    # x here is a vector of x values on which the
+    # average of the muhats is to be determined.
+    # 
+    # sapply applies the function given by FUN
+    # to each muhat in the list muhats
+    Ans <- sapply(muhats, FUN=function(muhat){muhat(x)})
+    # FUN calculates muhat(x) for every muhat and
+    # returns the answer Ans as a matrix having
+    # as many rows as there are values of x and
+    # as many columns as there are muhats.
+    # We now just need to get the average 
+    # across rows (first dimension)
+    # to find mubar(x) and return it
+    apply(Ans, MARGIN=1, FUN=mean)
+  }
+}
+fsamples <- lapply(1:m, FUN= function(i){getSampleComp(fake.data, n)})
+Ssamples <- lapply(fsamples, 
+                   FUN= function(Si){getXYSample("x", "y", Si, fake.data)})
+Tsamples <- lapply(fsamples, 
+                   FUN= function(Si){getXYSample("x", "y", !Si, fake.data)})
+
+### To determine Var(mutilde) we need to average over all samples
+### the average over all x and y in the test sample
+### the squared difference of the muhat and mubar.
+var_mutilde <- function(Ssamples, Tsamples, complexity){
+  ## get the predictor function for every sample S
+  muhats <- lapply(Ssamples, 
+                   FUN=function(sample){
+                     getmuhat(sample, complexity)
+                   }
+  )
+  ## get the average of these, mubar
+  mubar <- getmubar(muhats)
+  
+  ## average over all samples S
+  N_S <- length(Ssamples)
+  mean(sapply(1:N_S, 
+              FUN=function(j){
+                ## get muhat based on sample S_j
+                muhat <- muhats[[j]]
+                ## average over (x_i,y_i) in a
+                ## single sample T_j the squares
+                ## (y - muhat(x))^2
+                T_j <- Tsamples[[j]]
+                ave_mu_mu_sq(muhat, mubar, T_j$x)
+              }
+  )
+  )
+}
+var_mutilde(Ssamples, Tsamples, complexity = 2)
+var_mutilde(Ssamples, Tsamples, complexity = 10)
+```
+
+##3) Squared bias
+```{r}
+
+#iii)
+bias2_mutilde <- function(Ssamples, Tsamples, mu, complexity){
+  ## get the predictor function for every sample S
+  muhats <- lapply(Ssamples, 
+                   FUN=function(sample) getmuhat(sample, complexity)
+  )
+  ## get the average of these, mubar
+  mubar <- getmubar(muhats)
+  
+  ## average over all samples S
+  N_S <- length(Ssamples)
+  mean(sapply(1:N_S, 
+              FUN=function(j){
+                ## average over (x_i,y_i) in a
+                ## single sample T_j the squares
+                ## (y - muhat(x))^2
+                T_j <- Tsamples[[j]]
+                ave_mu_mu_sq(mubar, mu, T_j$x)
+              }
+  )
+  )
+}
+
+bias2_mutilde(Ssamples, Tsamples, muhat, complexity = 2)
+bias2_mutilde(Ssamples, Tsamples, muhat, complexity = 10)
+```
+
+# Generate m = 100 samples of size n = 40 and using apse_all calculate the APSE for complexities equal to 0:10.
+```{r}
+apse_all <- function(Ssamples, Tsamples, complexity, mu){
+  ## average over the samples S
+  ##
+  N_S <- length(Ssamples)
+  muhats <- lapply(Ssamples, 
+                   FUN=function(sample) getmuhat(sample, complexity)
+  )
+  ## get the average of these, mubar
+  mubar <- getmubar(muhats)
+  
+  rowMeans(sapply(1:N_S, 
+                  FUN=function(j){
+                    T_j <- Tsamples[[j]]
+                    muhat <- muhats[[j]]
+                    ## Take care of any NAs
+                    T_j <- na.omit(T_j)
+                    y <- T_j$y
+                    x <- T_j$x
+                    mu_x <- mu(x)
+                    muhat_x <- muhat(x)
+                    mubar_x <- mubar(x)
+                    
+                    ## apse
+                    ## average over (x_i,y_i) in a
+                    ## single sample T_j the squares
+                    ## (y - muhat(x))^2
+                    apse <- (y - muhat_x)
+                    
+                    ## bias2:
+                    ## average over (x_i,y_i) in a
+                    ## single sample T_j the squares
+                    ## (y - muhat(x))^2
+                    bias2 <- (mubar_x -mu_x)
+                    
+                    ## var_mutilde
+                    ## average over (x_i,y_i) in a
+                    ## single sample T_j the squares
+                    ## (y - muhat(x))^2
+                    var_mutilde <-  (muhat_x - mubar_x)
+                    
+                    ## var_y :
+                    ## average over (x_i,y_i) in a
+                    ## single sample T_j the squares
+                    ## (y - muhat(x))^2
+                    var_y <- (y - mu_x)
+                    
+                    ## Put them together and square them
+                    squares <- rbind(apse, var_mutilde, bias2, var_y)^2
+                    
+                    ## return means
+                    rowMeans(squares)
+                  }
+  ))
+}
+
+apse_lst = list()
+for (c in 0:10){
+  apse_lst[[c+1]] <- apse_all (Ssamples, Tsamples, c, muhat)
+}
+apse_mat <- matrix(unlist(apse_lst), nrow = 11, byrow = TRUE)
+df <- data.frame(complexity = 0:10,
+                 apse = apse_mat[,1], 
+                 var_mutilde = apse_mat[,2],
+                 bias2 = apse_mat[,3],
+                 var_y = apse_mat[,4])
+library(knitr)
+kable(df, caption="apse_all")
+par(mfrow=c(1,1))
+plot(x=0:10, y=apse_mat[,1], type = "l", col = "purple", ylim = c(0,15), xlab = "complexity",
+     ylab = "")
+par(new = TRUE)
+plot(x=0:10, y=apse_mat[,2], type = "l", col = "red" , ylim = c(0,15), yaxt ="n", xaxt ="n", ylab = "", xlab = "")
+par(new=TRUE)
+plot(x=0:10, y=apse_mat[,3], type = "l", col = "blue", ylim = c(0,15), yaxt ="n", xaxt ="n", ylab = "", xlab = "")
+```
+
+Both apse and var_mutilde reaches its lowest when complexity =5; bias is lowest when complexity = 6. Overall complexity = 5 appears to be the most reasonable choice. Further investigation is required to quantify the uncertainty in the complexity parameter.
+
+
+
